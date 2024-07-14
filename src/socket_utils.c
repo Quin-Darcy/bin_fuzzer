@@ -165,17 +165,98 @@ int manage_connections(const int socket_listen)
                     if (socket_client > max_socket) {
                         max_socket = socket_client;
                     }
+                    
+                    char host[NI_MAXHOST], service[NI_MAXSERV];
+                    int result = getnameinfo((struct sockaddr*)&client_address, client_len,
+                                            host, sizeof(host),
+                                            service, sizeof(service),
+                                            NI_NUMERICHOST | NI_NUMERICSERV);
 
-                    char address_buffer[100];
-                    getnameinfo((struct sockaddr*)&client_address, 
-                        client_len, address_buffer, 
-                        sizeof(address_buffer), 0, 0, 
-                        NI_NUMERICHOST);
-
-                    printf("[%d][%s][%s] New connection from %s\n", 
-                        getpid(), __FILE__, __func__, address_buffer);
+                    if (result == 0) {
+                        printf("[%d][%s][%s] New connection from %s:%s\n", 
+                            getpid(), __FILE__, __func__, host, service);
+                    } else {
+                        fprintf(stderr, "[%d][%s][%s] getnameinfo() failed: %s\n", 
+                            getpid(), __FILE__, __func__, gai_strerror(result));
+                    }
                 }
             }
         }
     }
+}
+
+int start_server(const char* local_address, const char* local_port)
+{
+    int ret = -1;
+
+    // Resolve and fetch socket address for server socket
+    struct addrinfo *listener_socket_address;
+    if (get_socket_address(local_address, local_port, &listener_socket_address) != 0) {
+        fprintf(stderr, "[%d][%s][%s] Failed to configure local address.\n", 
+            getpid(), __FILE__, __func__);
+        goto cleanup;
+    }
+
+    // Create a socket and bind it to the fetched address
+    int listener_socket;
+    if (create_socket(&listener_socket) != 0) {
+        fprintf(stderr, "[%d][%s][%s] Failed to create listener socket.\n", 
+            getpid(), __FILE__, __func__);
+        goto cleanup;
+    }
+
+    // Bind the socket to the local address
+    if (bind_socket(listener_socket, listener_socket_address) != 0) {
+        fprintf(stderr, "[%d][%s][%s] Failed to bind socket.\n", 
+            getpid(), __FILE__, __func__);
+        goto cleanup;
+    }
+
+    // Start the socket listening
+    if (start_listening(listener_socket) != 0) {
+        fprintf(stderr, "[%d][%s][%s] Failed to start listening.\n", 
+            getpid(), __FILE__, __func__);
+        goto cleanup;
+    }
+
+    // Manage connections in loop
+    if (manage_connections(listener_socket) != 0) {
+        fprintf(stderr, "[%d][%s][%s] Failed to manage connections.\n", 
+            getpid(), __FILE__, __func__);
+        goto cleanup;
+    }
+
+    ret = 0;
+
+cleanup:
+    if (listener_socket_address != NULL) {
+        freeaddrinfo(listener_socket_address);
+    }
+
+    if (listener_socket > 0) {
+        close(listener_socket);
+    } 
+
+    return ret;
+}
+
+int start_client(const char* remote_address, const char* remote_port)
+{
+    int client_socket;
+    if (create_socket(&client_socket) != 0) {
+        fprintf(stderr, "[%d][%s][%s] Failed to create client socket.\n", 
+            getpid(), __FILE__, __func__);
+        return -1;
+    }
+
+    if (connect_socket(client_socket, remote_address, remote_port) != 0) {
+        fprintf(stderr, "[%d][%s][%s] Failed to create connect client socket.\n", 
+            getpid(), __FILE__, __func__);
+        
+        if (client_socket > 0) {
+            close(client_socket);
+        }
+        return -1;
+    }
+    return 0;
 }
