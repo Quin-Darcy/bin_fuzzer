@@ -2,7 +2,7 @@
 
 # Compiler settings
 CC := gcc
-CFLAGS := -Wall -g
+CFLAGS := -Wall -g -O0
 
 # Source file and build directories
 SRC := src
