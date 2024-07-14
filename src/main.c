@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/wait.h>
 #include "process_utils.h"
 #include "socket_utils.h"
 
@@ -8,92 +9,50 @@ const char* BIN_FILE = "/home/arbegla/projects/C/binary_interactions/inter_proce
 const char* SRV_ADDRESS = "127.0.0.1";
 const char* SRV_PORT = "8080";
 
+const size_t NUM_CLIENTS = 4;
+
 int main() 
 {
-    // Resolve and fetch socket address for server socket
-    struct addrinfo *listener_socket_address;
-    if (get_socket_address(SRV_ADDRESS, SRV_PORT, &listener_socket_address) != 0) {
-        fprintf(stderr, "[%d][%s][%s] Failed to configure local address.\n", 
-            getpid(), __FILE__, __func__);
-        goto cleanup;
-    }
-
-    // Create a socket and bind it to the fetched address
-    int listener_socket;
-    if (create_socket(&listener_socket) != 0) {
-        fprintf(stderr, "[%d][%s][%s] Failed to create listener socket.\n", 
-            getpid(), __FILE__, __func__);
-        goto cleanup;
-    }
-
-    // Bind the socket to the local address
-    if (bind_socket(listener_socket, listener_socket_address) != 0) {
-        fprintf(stderr, "[%d][%s][%s] Failed to bind socket.\n", 
-            getpid(), __FILE__, __func__);
-        goto cleanup;
-    }
-
-    // Start the socket listening
-    if (start_listening(listener_socket) != 0) {
-        fprintf(stderr, "[%d][%s][%s] Failed to start listening.\n", 
-            getpid(), __FILE__, __func__);
-        goto cleanup;
-    }
-
+    // Create first child process to run the server socket in
     pid_t pid;
     if (create_process(&pid) != 0) {
-        fprintf(stderr, "[%d][%s][%s] Failed to create process.\n", 
+        fprintf(stderr, "[%d][%s][%s] Failed to create process for server.\n", 
             getpid(), __FILE__, __func__);
-        goto cleanup;
+        return -1;
     }
 
-    int client_socket;
     if (pid == 0) {
-        if (create_socket(&client_socket) != 0) {
-            fprintf(stderr, "[%d][%s][%s] Failed to create client socket.\n", 
+        // This is the server process
+        if (start_server(SRV_ADDRESS, SRV_PORT) != 0) {
+            fprintf(stderr, "[%d][%s][%s] Failed to start server.\n",
                 getpid(), __FILE__, __func__);
-            exit(1);
-        }
-
-        if (connect_socket(client_socket, SRV_ADDRESS, SRV_PORT) != 0) {
-            fprintf(stderr, "[%d][%s][%s] Failed to create connect client socket.\n", 
-                getpid(), __FILE__, __func__);
-            exit(1);
-        } 
-    } else {
-        if (manage_connections(listener_socket) != 0) {
-            fprintf(stderr, "[%d][%s][%s] Failed to manage connections.\n", 
-                getpid(), __FILE__, __func__);
-            goto cleanup;
+            return -1;
         }
     }
 
-    /*
-    if (run_bin(pid, BIN_FILE) != 0) {
-        fprintf(stderr, "[%d][%s][%s] Failed to run %s.\n", 
-            getpid(), __FILE__, __func__, BIN_FILE);
-        goto cleanup;
-    }
-    */
+    size_t i;
+    for (i = 0; i < NUM_CLIENTS; i++) {
+        // Create new process within which to run client
+        if (create_process(&pid) != 0) {
+            fprintf(stderr, "[%d][%s][%s] Failed to create process for client.\n", 
+                getpid(), __FILE__, __func__);
+            continue;
+        }
 
-    if (pid != 0) {
-        if (cleanup_process(pid) != 0) {
-            fprintf(stderr, "[%d][%s][%s] Failed to cleanup process (%d).\n", 
-                getpid(), __FILE__, __func__, pid);
-            goto cleanup;
+        if (pid == 0) {
+            // This is a client process
+            if (start_client(SRV_ADDRESS, SRV_PORT) != 0) {
+                fprintf(stderr, "[%d][%s][%s] Failed to start client.\n",
+                    getpid(), __FILE__, __func__);
+                exit(1);
+            }
+            exit(0);
         }
     }
 
-cleanup:
-    if (listener_socket_address != NULL) {
-        freeaddrinfo(listener_socket_address);
-    }
-
-    if (listener_socket > 0) {
-        close(listener_socket);
-    }
-
-    if (client_socket > 0) {
-        close(client_socket);
+    // Parent process waits for all child processes to complete
+    while ((pid = wait(NULL)) > 0) {
+        printf("[%d][%s][%s] Process %d completed.\n",
+            getpid(), __FILE__, __func__, pid);
     }
 }
