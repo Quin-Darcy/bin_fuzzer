@@ -86,16 +86,13 @@ int bind_socket(const int bound_socket, const struct addrinfo *bind_address)
 
 int start_listening(const int listen_socket)
 {
-    printf("[%d][%s][%s] Socket (%d) starting listening ...\n",
-        getpid(), __FILE__, __func__, listen_socket);
-
     if (listen(listen_socket, 10) < 0) {
         fprintf(stderr, "[%d][%s][%s] Failed to start listening. (%d)\n",
             getpid(), __FILE__, __func__, errno);
         return -1;
     }
 
-    printf("[%d][%s][%s] Socket (%d) now listening.\n", 
+    printf("[%d][%s][%s] Socket (%d) listening ... \n", 
         getpid(), __FILE__, __func__, listen_socket);
 
     return 0;
@@ -185,8 +182,10 @@ int manage_connections(const int socket_listen)
     }
 }
 
-int start_server(const char* local_address, const char* local_port)
+int start_server(const char* local_address, const char* local_port, int *listener_socket)
 {
+    printf("[%d][%s][%s] Starting server at %s:%s ...\n",
+        getpid(), __FILE__, __func__, local_address, local_port);
     int ret = -1;
 
     // Resolve and fetch socket address for server socket
@@ -198,29 +197,28 @@ int start_server(const char* local_address, const char* local_port)
     }
 
     // Create a socket and bind it to the fetched address
-    int listener_socket;
-    if (create_socket(&listener_socket) != 0) {
+    if (create_socket(listener_socket) != 0) {
         fprintf(stderr, "[%d][%s][%s] Failed to create listener socket.\n", 
             getpid(), __FILE__, __func__);
         goto cleanup;
     }
 
     // Bind the socket to the local address
-    if (bind_socket(listener_socket, listener_socket_address) != 0) {
+    if (bind_socket(*listener_socket, listener_socket_address) != 0) {
         fprintf(stderr, "[%d][%s][%s] Failed to bind socket.\n", 
             getpid(), __FILE__, __func__);
         goto cleanup;
     }
 
     // Start the socket listening
-    if (start_listening(listener_socket) != 0) {
+    if (start_listening(*listener_socket) != 0) {
         fprintf(stderr, "[%d][%s][%s] Failed to start listening.\n", 
             getpid(), __FILE__, __func__);
         goto cleanup;
     }
 
     // Manage connections in loop
-    if (manage_connections(listener_socket) != 0) {
+    if (manage_connections(*listener_socket) != 0) {
         fprintf(stderr, "[%d][%s][%s] Failed to manage connections.\n", 
             getpid(), __FILE__, __func__);
         goto cleanup;
@@ -233,30 +231,133 @@ cleanup:
         freeaddrinfo(listener_socket_address);
     }
 
-    if (listener_socket > 0) {
-        close(listener_socket);
+    if (*listener_socket > 0) {
+        close(*listener_socket);
     } 
 
     return ret;
 }
 
-int start_client(const char* remote_address, const char* remote_port)
-{
-    int client_socket;
-    if (create_socket(&client_socket) != 0) {
-        fprintf(stderr, "[%d][%s][%s] Failed to create client socket.\n", 
-            getpid(), __FILE__, __func__);
+int configure_io(int socket_fd) {
+    printf("[%d][%s][%s] Redirecting IO to socket (%d) ...\n",
+        getpid(), __FILE__, __func__, socket_fd);
+
+    // Redirect stdout to socket
+    if (dup2(socket_fd, STDOUT_FILENO) == -1) {
+        fprintf(stderr, "[%d][%s][%s] Failed to redirect stdout to socket %d. Error: %s\n", 
+            getpid(), __FILE__, __func__, socket_fd, strerror(errno));
         return -1;
     }
 
-    if (connect_socket(client_socket, remote_address, remote_port) != 0) {
-        fprintf(stderr, "[%d][%s][%s] Failed to create connect client socket.\n", 
-            getpid(), __FILE__, __func__);
-        
-        if (client_socket > 0) {
-            close(client_socket);
-        }
+    // Redirect stdin from socket
+    if (dup2(socket_fd, STDIN_FILENO) == -1) {
+        fprintf(stderr, "[%d][%s][%s] Failed to redirect stdin from socket %d. Error: %s\n", 
+            getpid(), __FILE__, __func__, socket_fd, strerror(errno));
         return -1;
     }
+
+    // Close the original socket descriptor to avoid descriptor leakage
+    // This does not affect the redirection as the descriptors are already duplicated
+    if (close(socket_fd) == -1) {
+        fprintf(stderr, "[%d][%s][%s] Failed to close original socket descriptor %d. Error: %s\n", 
+            getpid(), __FILE__, __func__, socket_fd, strerror(errno));
+        // Continue since the IO redirection was successful and this is not a critical error
+    }
+
+    printf("[%d][%s][%s] Successfully redirected IO to and from the socket.\n",
+        getpid(), __FILE__, __func__);
+
     return 0;
+}
+
+int start_client(const char* remote_address, const char* remote_port)
+{
+    int ret = -1;
+    printf("[%d][%s][%s] Creating client to connect to %s:%s ...\n",
+        getpid(), __FILE__, __func__, remote_address, remote_port);
+
+    int client_socket;
+    int attempts = 0;
+    int connected = 0;
+
+    while (attempts < 5 && !connected) {
+        if (create_socket(&client_socket) != 0) {
+            fprintf(stderr, "[%d][%s][%s] Failed to create client socket.\n", 
+                getpid(), __FILE__, __func__);
+            
+            attempts++;
+            sleep(1);
+            continue;
+        }
+
+        if (connect_socket(client_socket, remote_address, remote_port) != 0) {
+            fprintf(stderr, "[%d][%s][%s] Failed to create connect client socket.\n", 
+                getpid(), __FILE__, __func__);
+            
+            if (client_socket > 0) {
+                close(client_socket);
+            }
+
+            attempts++;
+            sleep(1);
+            continue;
+        } 
+
+        connected = 1;
+    }
+
+    // If we exited the retry loop and never connected, return an error
+    if (connected == 0) {
+        fprintf(stderr, "[%d][%s][%s] Failed to connect client to remote socket.\n",
+            getpid(), __FILE__, __func__);
+        goto cleanup;
+    }
+
+    // Loop for sending and receiving data
+    while (1) {
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(STDIN_FILENO, &read_fds);  // Listen to stdin for anything to send
+        FD_SET(client_socket, &read_fds); // Listen to socket for incoming messages
+
+        int maxfd = (STDIN_FILENO > client_socket ? STDIN_FILENO : client_socket) + 1;
+        int activity = select(maxfd, &read_fds, NULL, NULL, NULL);
+
+        if (activity < 0 && errno != EINTR) {
+            perror("Select error");
+            break; 
+        }
+
+        if (FD_ISSET(STDIN_FILENO, &read_fds)) {
+            char buf[1024];
+            ssize_t nbytes = read(STDIN_FILENO, buf, sizeof(buf));
+            if (nbytes > 0) {
+                // Send data read from stdin to socket
+                send(client_socket, buf, nbytes, 0);
+            }
+        }
+
+        if (FD_ISSET(client_socket, &read_fds)) {
+            char buf[1024];
+            ssize_t nbytes = recv(client_socket, buf, sizeof(buf), 0);
+            if (nbytes > 0) {
+                // Output data received from socket
+                write(STDOUT_FILENO, buf, nbytes);
+            } else if (nbytes == 0) {
+                // Connection closed
+                printf("Connection closed by server.\n");
+                break;
+            } else {
+                perror("Recv error");
+                break;
+            }
+        }
+    }
+    ret = 0;
+
+cleanup:
+    if (client_socket > 0) {
+        close(client_socket);
+    }
+    return ret;
 }

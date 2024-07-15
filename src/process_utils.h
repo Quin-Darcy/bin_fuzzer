@@ -1,6 +1,13 @@
 #ifndef PROCESS_UTILS_H
 #define PROCESS_UTILS_H
 
+#include <stdio.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
 #include <sys/types.h>
 
 int create_process(pid_t *pid);
