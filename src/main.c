@@ -9,7 +9,7 @@ const char* BIN_FILE = "/home/arbegla/projects/C/binary_interactions/inter_proce
 const char* SRV_ADDRESS = "127.0.0.1";
 const char* SRV_PORT = "8080";
 
-const size_t NUM_CLIENTS = 4;
+const size_t NUM_CLIENTS = 1;
 
 int main() 
 {
@@ -21,14 +21,18 @@ int main()
         return -1;
     }
 
+    int srv_socket_fd;
     if (pid == 0) {
         // This is the server process
-        if (start_server(SRV_ADDRESS, SRV_PORT) != 0) {
+        if (start_server(SRV_ADDRESS, SRV_PORT, &srv_socket_fd) != 0) {
             fprintf(stderr, "[%d][%s][%s] Failed to start server.\n",
                 getpid(), __FILE__, __func__);
             return -1;
         }
     }
+
+    // Wait for server to get ready
+    sleep(2);
 
     size_t i;
     for (i = 0; i < NUM_CLIENTS; i++) {
