@@ -122,47 +122,68 @@ int connect_socket(const int local_socket, const char* address, const char* port
     return 0;
 }
 
-int manage_connections(const int socket_listen)
+int manage_connections(const int socket_listen) 
 {
-    fd_set master;
-    FD_ZERO(&master);
-    FD_SET(socket_listen, &master);
-    int max_socket = socket_listen;
-
     printf("[%d][%s][%s] Waiting for connections ... \n",
         getpid(), __FILE__, __func__);
 
-    while(1) {
-        fd_set reads;
-        reads = master;
 
-        if (select(max_socket + 1, &reads, 0, 0, 0) < 0) {
-            fprintf(stderr, "[%d][%s][%s] Error: select() failed. (%d)\n", 
-                getpid(), __FILE__, __func__, errno);
-            return -1;
+    // This will hold all file descriptors
+    fd_set all_fds;
+    FD_ZERO(&all_fds);
+    // Add the listener socket to the set of all file descriptors
+    FD_SET(socket_listen, &all_fds);
+    
+    // select() keeps track of all FDs up to some number.
+    // Initialize this number to the listener socket as that 
+    // is currently the only FD we have. This value will
+    // get updated as new clients connect.
+    int max_socket = socket_listen;
+
+    while(1) {
+        // Create working copy of all_fds because
+        // select() actually modifies the socket descriptors
+        // This will be the set of FDs we check to see if any
+        // are ready to be read from
+        fd_set read_fds;
+        read_fds = all_fds;
+
+        // Our 'first' call to select() and we check to see if it spits
+        // out any errors and hanldle them. Note we are not monitoring for 
+        // writing or exceptions snf setting no timeout
+        if (select(max_socket + 1, &read_fds, NULL, NULL, NULL) < 0) {
+            printf("[%d][%s][%s] Call to select() failed: %s\n",
+                getpid(), __FILE__, __func__, strerror(errno));
         }
 
-        int i;
-        for (i = 1; i <= max_socket; ++i) {
-            if (FD_ISSET(i, &reads)) {
+        for (size_t i = 1; i < max_socket + 1; i++) {
+            // Use the FD_ISSET macro to see if select() detected
+            // activity in any of the FDs in read_fds which would
+            // be the case if a particular bit is set
+            if (FD_ISSET(i, &read_fds)) {
+                // This is the condition for when a new client connects
                 if (i == socket_listen) {
+                    // Accept and store the new connection
                     struct sockaddr_storage client_address;
                     socklen_t client_len = sizeof(client_address);
-
-                    int socket_client = accept(socket_listen, 
-                                                (struct sockaddr*)&client_address, &client_len);
+                    int socket_client = accept(socket_listen,
+                        (struct sockaddr*)&client_address, &client_len);
 
                     if (socket_client == -1) {
-                        fprintf(stderr, "[%d][%s][%s] accept() failed. (%d)\n", 
-                            getpid(), __FILE__, __func__, errno);
-                        return -1;
+                        fprintf(stderr, "[%d][%s][%s] accept() failed. %s\n", 
+                            getpid(), __FILE__, __func__, strerror(errno));
+                        return -1; 
                     }
 
-                    FD_SET(socket_client, &master);
+                    // Add the new client to the file descriptor set
+                    FD_SET(socket_client, &all_fds);
+
+                    // Update the max_socket value
                     if (socket_client > max_socket) {
                         max_socket = socket_client;
                     }
-                    
+
+                    // Print information about the new client
                     char host[NI_MAXHOST], service[NI_MAXSERV];
                     int result = getnameinfo((struct sockaddr*)&client_address, client_len,
                                             host, sizeof(host),
@@ -175,6 +196,13 @@ int manage_connections(const int socket_listen)
                     } else {
                         fprintf(stderr, "[%d][%s][%s] getnameinfo() failed: %s\n", 
                             getpid(), __FILE__, __func__, gai_strerror(result));
+                    }
+
+                    // Send a welcome message to the new client
+                    char *welcome_msg = "Welcome to the server!\n";
+                    if (send(socket_client, welcome_msg, strlen(welcome_msg), 0) == -1) {
+                        fprintf(stderr, "[%d][%s][%s] send() failed: %s\n", 
+                            getpid(), __FILE__, __func__, strerror(errno));
                     }
                 }
             }
@@ -217,11 +245,11 @@ int start_server(const char* local_address, const char* local_port, int *listene
         goto cleanup;
     }
 
-    // Manage connections in loop
+    // TODO: Here is where a call to a function which manages connections would be called
     if (manage_connections(*listener_socket) != 0) {
         fprintf(stderr, "[%d][%s][%s] Failed to manage connections.\n", 
             getpid(), __FILE__, __func__);
-        goto cleanup;
+        goto cleanup;  
     }
 
     ret = 0;
@@ -313,46 +341,18 @@ int start_client(const char* remote_address, const char* remote_port)
         goto cleanup;
     }
 
-    // Loop for sending and receiving data
-    while (1) {
-        fd_set read_fds;
-        FD_ZERO(&read_fds);
-        FD_SET(STDIN_FILENO, &read_fds);  // Listen to stdin for anything to send
-        FD_SET(client_socket, &read_fds); // Listen to socket for incoming messages
-
-        int maxfd = (STDIN_FILENO > client_socket ? STDIN_FILENO : client_socket) + 1;
-        int activity = select(maxfd, &read_fds, NULL, NULL, NULL);
-
-        if (activity < 0 && errno != EINTR) {
-            perror("Select error");
-            break; 
-        }
-
-        if (FD_ISSET(STDIN_FILENO, &read_fds)) {
-            char buf[1024];
-            ssize_t nbytes = read(STDIN_FILENO, buf, sizeof(buf));
-            if (nbytes > 0) {
-                // Send data read from stdin to socket
-                send(client_socket, buf, nbytes, 0);
-            }
-        }
-
-        if (FD_ISSET(client_socket, &read_fds)) {
-            char buf[1024];
-            ssize_t nbytes = recv(client_socket, buf, sizeof(buf), 0);
-            if (nbytes > 0) {
-                // Output data received from socket
-                write(STDOUT_FILENO, buf, nbytes);
-            } else if (nbytes == 0) {
-                // Connection closed
-                printf("Connection closed by server.\n");
-                break;
-            } else {
-                perror("Recv error");
-                break;
-            }
-        }
+    char buf[1024];
+    size_t nbytes;
+    while ((nbytes = recv(client_socket, buf, sizeof(buf), 0)) > 0) {
+        write(STDOUT_FILENO, buf, nbytes);
     }
+
+    if (nbytes == 0) {
+        printf("Connection closed by server.\n");
+    } else {
+        perror("Recv error");
+    }
+
     ret = 0;
 
 cleanup:

@@ -3,6 +3,7 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -19,6 +20,7 @@
 #define SOCKET_PROTOCOL IPPROTO_TCP
 #define SOCKET_FLAGS AI_PASSIVE
 #define MAX_READ_BYTES 4096
+#define MAX_CLIENTS 30
 
 int get_socket_address(const char* address, const char* port, struct addrinfo **socket_address);
 int create_socket(int *new_socket);
