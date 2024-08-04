@@ -5,9 +5,9 @@
 #include "socket_utils.h"
 
 
-const char* BIN_FILE = "/home/arbegla/projects/C/binary_interactions/inter_process_comms/src/test_binary";
+const char* BIN_FILE = "/home/pohmsuin/projects/C/bin_fuzzer/src/test_binary";
 const char* SRV_ADDRESS = "127.0.0.1";
-const char* SRV_PORT = "8080";
+const char* SRV_PORT = "8891";
 
 const size_t NUM_CLIENTS = 1;
 
